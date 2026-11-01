@@ -9,19 +9,158 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-st.set_page_config(page_title="발주 전표 자동 가공기", layout="centered")
+# 페이지 레이아웃 및 브라우저 탭 설정
+st.set_page_config(
+    page_title="UNTAPPED STUDIO | 나염·발주 엑셀 자동 가공 웹매크로",
+    page_icon="⚙️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
+# --- UNTAPPED STUDIO 맞춤형 UI 스타일링 (CSS) ---
+st.markdown("""
+<style>
+    /* 기본 여백 및 배경색 지정 */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 3rem !important;
+        max-width: 900px !important;
+    }
+    body, [data-testid="stAppViewContainer"] {
+        background-color: #F4F7FB !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    #MainMenu, footer, header {visibility: hidden;}
+
+    /* 상단 UNTAPPED STUDIO 네이비 헤더 바 */
+    .custom-header {
+        background-color: #1A5CBA;
+        color: #ffffff;
+        padding: 16px 24px;
+        border-radius: 14px;
+        box-shadow: 0 4px 14px rgba(26, 92, 186, 0.25);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+    .custom-header h1 {
+        font-size: 1.25rem !important;
+        font-weight: 800 !important;
+        margin: 0 !important;
+        color: #ffffff !important;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .custom-header h1 span {
+        font-weight: 400;
+        font-size: 1.05rem;
+        color: #BFDBFE;
+    }
+    .custom-badge {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 9999px;
+        padding: 5px 14px;
+        font-size: 0.75rem;
+        color: #EFF6FF;
+        font-weight: 500;
+    }
+
+    /* 알림 배너 박스 */
+    .notice-box {
+        background-color: #EFF6FF;
+        border: 1px solid #BFDBFE;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #1E40AF;
+        font-size: 0.88rem;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+    }
+
+    /* 파일 카드 스타일 */
+    .file-card {
+        background-color: #ffffff;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        margin-bottom: 10px;
+    }
+    .file-card .icon-box {
+        font-size: 1.8rem;
+        color: #1A5CBA;
+    }
+    .file-card .file-info {
+        flex-grow: 1;
+    }
+    .file-card .file-name {
+        font-weight: 700;
+        font-size: 0.92rem;
+        color: #1E293B;
+    }
+    .file-card .file-desc {
+        font-size: 0.78rem;
+        color: #64748B;
+        margin-top: 3px;
+    }
+
+    /* 다운로드 버튼 녹색/파란색 커스텀 */
+    div[data-testid="stDownloadButton"] button {
+        background-color: #1F7A4D !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        padding: 6px 14px !important;
+        box-shadow: 0 2px 4px rgba(31, 122, 77, 0.2) !important;
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        background-color: #18633E !important;
+    }
+
+    /* 전체 ZIP 다운로드 버튼 스타일 */
+    .zip-btn-wrap div[data-testid="stDownloadButton"] button {
+        background-color: #1A73E8 !important;
+        width: 100% !important;
+        padding: 12px !important;
+        font-size: 0.95rem !important;
+        border-radius: 10px !important;
+        box-shadow: 0 3px 8px rgba(26, 115, 232, 0.25) !important;
+    }
+    .zip-btn-wrap div[data-testid="stDownloadButton"] button:hover {
+        background-color: #1557B0 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 템플릿 상단 헤더 & 배너 렌더링 ---
+st.markdown("""
+<div class="custom-header">
+    <h1>⚙️ UNTAPPED STUDIO <span>| 나염·발주 엑셀 자동 가공 웹매크로</span></h1>
+    <div class="custom-badge">💻 다른 PC에서도 동일하게 사용 가능</div>
+</div>
+<div class="notice-box">
+    <span>💡</span>
+    <span>파이썬 미설치 PC에서도 링크 접속 후 원본 <b>.xls</b> 파일을 끌어다 놓으면 <b>1초 만에 [가공완료].xlsx</b> 양식으로 자동 변환됩니다.</span>
+</div>
+""", unsafe_allow_html=True)
+
+# --- 엑셀 변환 핵심 로직 ---
 def clean_cell_value(val):
     if isinstance(val, float) and val.is_integer():
         return int(val)
     return val
 
 def extract_base_option(opt_str):
-    """
-    나염 로고 표기를 제거하여 원단/무지 원재고 옵션으로 변환
-    예: '[블랙(화이트로고)-S]' -> '[블랙-S]'
-        '[그레이(네이비로고)-2XL]' -> '[그레이-2XL]'
-    """
     opt_str = str(opt_str).strip()
     m = re.match(r'\[(.*)\]', opt_str)
     inner = m.group(1) if m else opt_str
@@ -29,13 +168,11 @@ def extract_base_option(opt_str):
     return f"[{cleaned}]"
 
 def process_single_file_bytes(file_bytes):
-    # 1. 원본 XLS 바이너리 데이터 읽기
+    # 원본 XLS 읽기
     wb_target = xlrd.open_workbook(file_contents=file_bytes)
     sheet = wb_target.sheet_by_index(0)
+    top_title = sheet.cell_value(0, 0)
 
-    top_title = sheet.cell_value(0, 0) # 1행 전표명
-
-    # 2. 데이터 추출 (10행 헤더 기준, 마지막 합계 행 제외)
     rows_data = []
     raw_inventory_items = []
 
@@ -47,15 +184,14 @@ def process_single_file_bytes(file_bytes):
         c4 = clean_cell_value(sheet.cell_value(r, 4)) # 바코드
 
         rows_data.append([c0, c2, c3, c5, c4])
-        
-        # 2번 시트(원재고 취합)용 원천 데이터
+
         try:
             qty_num = int(float(c5))
         except (ValueError, TypeError):
             qty_num = 0
         raw_inventory_items.append((str(c0), str(c3), qty_num))
 
-    # 3. 1번 시트용 상품코드 및 옵션 변경 구분 처리
+    # 구분 행 분류
     grouped_rows = []
     prev_item_code = None
     prev_logo_part = None
@@ -75,12 +211,11 @@ def process_single_file_bytes(file_bytes):
         prev_item_code = item_code
         prev_logo_part = logo_part
 
-    # 4. Openpyxl 엑셀 생성
     wb = openpyxl.Workbook()
-    
-    # ----------------------------------------------------
-    # [시트 1] 기존 가공리스트 (기존 기능 100% 동일 유지)
-    # ----------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # [시트 1] 가공리스트 (기존 서식 100% 동일 유지)
+    # -------------------------------------------------------------------------
     ws1 = wb.active
     ws1.title = "가공리스트"
     ws1.views.sheetView[0].showGridLines = True
@@ -88,7 +223,7 @@ def process_single_file_bytes(file_bytes):
     thin = Side(border_style="thin", color="000000")
     border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # 1~2행 병합 및 제목
+    # 1~2행 전표 타이틀 병합
     ws1.merge_cells("A1:E2")
     cell_a1 = ws1["A1"]
     cell_a1.value = top_title
@@ -177,22 +312,19 @@ def process_single_file_bytes(file_bytes):
                     max_len = length
         ws1.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
 
-    # ----------------------------------------------------
-    # [시트 2] 신규 원재고 취합 수량 시트 (12333.xls 양식)
-    # ----------------------------------------------------
+    # -------------------------------------------------------------------------
+    # [시트 2] 원재고취합 (12333.xls 양식)
+    # -------------------------------------------------------------------------
     ws2 = wb.create_sheet(title="원재고취합")
     ws2.views.sheetView[0].showGridLines = True
 
-    # 원재고 옵션별 수량 합산
     agg_dict = defaultdict(int)
     for prod_name, opt_raw, qty_num in raw_inventory_items:
         base_opt = extract_base_option(opt_raw)
         agg_dict[(prod_name, base_opt)] += qty_num
 
-    # 옵션명 기준 정렬 (그레이 -> 네이비 -> 블랙 순)
     sorted_items = sorted(agg_dict.items(), key=lambda x: (x[0][0], x[0][1]))
 
-    # 시트 2 헤더 (1행)
     headers2 = ['공급처상품명', '옵션', '수량']
     ws2.row_dimensions[1].height = 30
     for c_idx, h in enumerate(headers2, 1):
@@ -207,11 +339,9 @@ def process_single_file_bytes(file_bytes):
     prev_color = None
 
     for (prod_name, base_opt), qty_val in sorted_items:
-        # 옵션에서 색상 추출 (예: '[그레이-2XL]' -> '그레이')
         m_color = re.match(r'\[(.*?)-', base_opt)
         curr_color = m_color.group(1).strip() if m_color else base_opt
 
-        # 색상이 변경될 때 구분 빈 행 삽입 (테두리 포함)
         if prev_color is not None and curr_color != prev_color:
             ws2.row_dimensions[curr_row2].height = 28
             for c_idx in range(1, 4):
@@ -219,7 +349,6 @@ def process_single_file_bytes(file_bytes):
                 cell.border = border_all
             curr_row2 += 1
 
-        # 데이터 입력 행
         ws2.row_dimensions[curr_row2].height = 30
         row_vals = [prod_name, base_opt, qty_val]
         for c_idx, val in enumerate(row_vals, 1):
@@ -234,7 +363,7 @@ def process_single_file_bytes(file_bytes):
         prev_color = curr_color
         curr_row2 += 1
 
-    # 시트 2 최하단 총합계 행
+    # 시트 2 총합계 행
     ws2.row_dimensions[curr_row2].height = 30
     cell_total_label = ws2.cell(row=curr_row2, column=1, value="총합계")
     cell_total_label.font = Font(name="Malgun Gothic", size=13, bold=True)
@@ -250,7 +379,6 @@ def process_single_file_bytes(file_bytes):
     cell_total_val.border = border_all
     cell_total_val.number_format = '#,##0'
 
-    # 시트 2 열 너비 자동 맞춤
     for col in ws2.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
@@ -262,58 +390,82 @@ def process_single_file_bytes(file_bytes):
                     max_len = length
         ws2.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 14)
 
-    # 엑셀 파일 저장 및 바이너리 반환
     out_buffer = io.BytesIO()
     wb.save(out_buffer)
     out_buffer.seek(0)
-    return out_buffer.getvalue()
+    return out_buffer.getvalue(), len(rows_data), total_qty1
 
-# --- 웹 화면 구성 (Streamlit UI) ---
-st.title("📦 발주 전표 자동 가공기")
-st.markdown("가공할 **`.xls`** 파일을 드래그하여 올리면, **가공리스트(시트1)**와 **원재고취합(시트2)**이 포함된 **`.xlsx`** 파일로 즉시 변환됩니다.")
-
+# --- 파일 업로더 ---
 uploaded_files = st.file_uploader(
-    "XLS 전표 파일을 선택하세요 (복수 선택 가능)", 
-    type=["xls"], 
-    accept_multiple_files=True
+    "여기에 원본 .xls 파일을 끌어다 놓으세요 (다중 파일 일괄 변환 지원)",
+    type=["xls"],
+    accept_multiple_files=True,
+    help="여러 개의 원본 발주 .xls 파일을 동시에 등록할 수 있습니다."
 )
 
+# --- 변환 완료 카드 리스트 렌더링 ---
 if uploaded_files:
-    if st.button("🚀 변환 시작", type="primary"):
-        with st.spinner("엑셀 가공 작업 중입니다..."):
-            processed_results = []
-            
-            for up_file in uploaded_files:
-                file_bytes = up_file.read()
-                try:
-                    res_bytes = process_single_file_bytes(file_bytes)
-                    base_name = os.path.splitext(up_file.name)[0]
-                    out_name = f"[가공완료]_{base_name}.xlsx"
-                    processed_results.append((out_name, res_bytes))
-                except Exception as e:
-                    st.error(f"❌ {up_file.name} 변환 실패: {e}")
+    processed_results = []
+    for up_file in uploaded_files:
+        try:
+            file_bytes = up_file.read()
+            res_bytes, item_cnt, total_q = process_single_file_bytes(file_bytes)
+            base_name = os.path.splitext(up_file.name)[0]
+            out_name = f"[가공완료]_{base_name}.xlsx"
+            processed_results.append({
+                "filename": out_name,
+                "item_count": item_cnt,
+                "total_qty": total_q,
+                "data": res_bytes
+            })
+        except Exception as e:
+            st.error(f"❌ {up_file.name} 변환 중 오류: {e}")
 
-            if processed_results:
-                st.success(f"총 {len(processed_results)}개 파일 변환이 완료되었습니다!")
+    if processed_results:
+        st.markdown("""
+        <div style="display:flex; align-items:center; gap:8px; margin-top:24px; margin-bottom:12px;">
+            <span style="color:#1A5CBA; font-size:1.15rem;">✔️</span>
+            <span style="font-weight:700; color:#1E293B; font-size:1.05rem;">변환 완료 리스트</span>
+        </div>
+        """, unsafe_allow_html=True)
 
-                if len(processed_results) == 1:
-                    out_name, res_bytes = processed_results[0]
-                    st.download_button(
-                        label=f"📥 {out_name} 다운로드",
-                        data=res_bytes,
-                        file_name=out_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                else:
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for out_name, res_bytes in processed_results:
-                            zf.writestr(out_name, res_bytes)
-                    zip_buffer.seek(0)
+        # 각 파일별 요약 카드 및 개별 다운로드 버튼
+        for idx, item in enumerate(processed_results):
+            col_info, col_btn = st.columns([4, 1])
+            with col_info:
+                st.markdown(f"""
+                <div class="file-card">
+                    <div class="icon-box">📄</div>
+                    <div class="file-info">
+                        <div class="file-name">{item['filename']}</div>
+                        <div class="file-desc">품목 {item['item_count']}건 / 총 수량 {item['total_qty']:,}장 (가공리스트 + 원재고취합 포함)</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_btn:
+                st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                st.download_button(
+                    label="📥 개별 다운로드",
+                    data=item["data"],
+                    file_name=item["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_single_{idx}"
+                )
 
-                    st.download_button(
-                        label="📦 전체 가공 파일 ZIP 다운로드",
-                        data=zip_buffer.getvalue(),
-                        file_name="가공완료_엑셀목록.zip",
-                        mime="application/zip"
-                    )
+        # 전체 ZIP 일괄 다운로드 버튼
+        if len(processed_results) > 1:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for item in processed_results:
+                    zf.writestr(item["filename"], item["data"])
+            zip_buffer.seek(0)
+
+            st.markdown("<div class='zip-btn-wrap' style='margin-top:16px;'>", unsafe_allow_html=True)
+            st.download_button(
+                label="📦 전체 가공완료 파일 ZIP 일괄 다운로드",
+                data=zip_buffer.getvalue(),
+                file_name="가공완료_나염발주_전체목록.zip",
+                mime="application/zip",
+                key="dl_zip_all"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
