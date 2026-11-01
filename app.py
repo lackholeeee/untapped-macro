@@ -1,7 +1,11 @@
 import io
 import os
+import re
 import zipfile
+import base64
 from typing import List
+from collections import defaultdict
+from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse, Response
 import xlrd
@@ -16,6 +20,14 @@ def clean_cell_value(val):
         return int(val)
     return val
 
+def extract_base_option(opt_str):
+    """나염 로고 표기 제거하여 원재고(무지) 옵션으로 변환: [블랙(화이트로고)-S] -> [블랙-S]"""
+    opt_str = str(opt_str).strip()
+    m = re.match(r'\[(.*)\]', opt_str)
+    inner = m.group(1) if m else opt_str
+    cleaned = re.sub(r'\(.*?\)', '', inner).strip()
+    return f"[{cleaned}]"
+
 def process_xls_to_xlsx(file_bytes: bytes):
     wb_target = xlrd.open_workbook(file_contents=file_bytes)
     sheet = wb_target.sheet_by_index(0)
@@ -23,14 +35,24 @@ def process_xls_to_xlsx(file_bytes: bytes):
     top_title = sheet.cell_value(0, 0)
 
     rows_data = []
+    raw_inventory_items = []
+
     for r in range(10, sheet.nrows - 1):
-        c0 = clean_cell_value(sheet.cell_value(r, 0))
-        c2 = clean_cell_value(sheet.cell_value(r, 2))
-        c3 = clean_cell_value(sheet.cell_value(r, 3))
-        c5 = clean_cell_value(sheet.cell_value(r, 5))
-        c4 = clean_cell_value(sheet.cell_value(r, 4))
+        c0 = clean_cell_value(sheet.cell_value(r, 0)) # 공급처상품명
+        c2 = clean_cell_value(sheet.cell_value(r, 2)) # 상품코드
+        c3 = clean_cell_value(sheet.cell_value(r, 3)) # 옵션
+        c5 = clean_cell_value(sheet.cell_value(r, 5)) # 요청수량
+        c4 = clean_cell_value(sheet.cell_value(r, 4)) # 바코드
+
         rows_data.append([c0, c2, c3, c5, c4])
 
+        try:
+            qty_num = int(float(c5))
+        except (ValueError, TypeError):
+            qty_num = 0
+        raw_inventory_items.append((str(c0), str(c3), qty_num))
+
+    # 구분 행 처리
     grouped_rows = []
     prev_item_code = None
     prev_logo_part = None
@@ -51,56 +73,59 @@ def process_xls_to_xlsx(file_bytes: bytes):
         prev_logo_part = logo_part
 
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "가공리스트"
-    ws.views.sheetView[0].showGridLines = True
+
+    # ----------------------------------------------------
+    # [시트 1] 가공리스트 (기존 서식 100% 동일)
+    # ----------------------------------------------------
+    ws1 = wb.active
+    ws1.title = "가공리스트"
+    ws1.views.sheetView[0].showGridLines = True
 
     thin = Side(border_style="thin", color="000000")
     border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     # 1~2행 전표 타이틀 병합
-    ws.merge_cells("A1:E2")
-    cell_a1 = ws["A1"]
+    ws1.merge_cells("A1:E2")
+    cell_a1 = ws1["A1"]
     cell_a1.value = top_title
     cell_a1.font = Font(name="Malgun Gothic", size=16, bold=True)
     cell_a1.alignment = Alignment(horizontal="center", vertical="center")
 
     for r in range(1, 3):
-        ws.row_dimensions[r].height = 25
+        ws1.row_dimensions[r].height = 25
         for c in range(1, 6):
-            ws.cell(row=r, column=c).border = border_all
+            ws1.cell(row=r, column=c).border = border_all
 
     # 3행 헤더
-    headers = ['공급처상품명', '상품코드', '옵션', '요청수량', '바코드']
+    headers1 = ['공급처상품명', '상품코드', '옵션', '요청수량', '바코드']
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    ws.row_dimensions[3].height = 30
+    ws1.row_dimensions[3].height = 30
 
-    for c_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=3, column=c_idx, value=h)
+    for c_idx, h in enumerate(headers1, 1):
+        cell = ws1.cell(row=3, column=c_idx, value=h)
         cell.font = Font(name="Malgun Gothic", size=13, bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = header_fill
         cell.border = border_all
 
     item_change_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    curr_row = 4
-    total_qty = 0
-    item_count = len(rows_data)
+    curr_row1 = 4
+    total_qty1 = 0
 
     for r_data, r_type in grouped_rows:
-        ws.row_dimensions[curr_row].height = 30
+        ws1.row_dimensions[curr_row1].height = 30
         if r_type == 'item_change':
             for c_idx in range(1, 6):
-                cell = ws.cell(row=curr_row, column=c_idx, value="")
+                cell = ws1.cell(row=curr_row1, column=c_idx, value="")
                 cell.border = border_all
                 cell.fill = item_change_fill
         elif r_type == 'logo_change':
             for c_idx in range(1, 6):
-                cell = ws.cell(row=curr_row, column=c_idx, value="")
+                cell = ws1.cell(row=curr_row1, column=c_idx, value="")
                 cell.border = border_all
         else:
             for c_idx, val in enumerate(r_data, 1):
-                cell = ws.cell(row=curr_row, column=c_idx, value=val)
+                cell = ws1.cell(row=curr_row1, column=c_idx, value=val)
                 cell.font = Font(name="Malgun Gothic", size=13, bold=True)
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
                 cell.border = border_all
@@ -108,7 +133,7 @@ def process_xls_to_xlsx(file_bytes: bytes):
                 if c_idx == 4:
                     try:
                         qty_val = int(val)
-                        total_qty += qty_val
+                        total_qty1 += qty_val
                         cell.value = qty_val
                         cell.number_format = '#,##0'
                     except (ValueError, TypeError):
@@ -116,26 +141,26 @@ def process_xls_to_xlsx(file_bytes: bytes):
                 elif c_idx in (2, 5) and isinstance(val, (int, float)):
                     cell.number_format = '@'
 
-        curr_row += 1
+        curr_row1 += 1
 
-    # 합계 행
-    ws.row_dimensions[curr_row].height = 30
-    cell_total = ws.cell(row=curr_row, column=1, value="합계")
-    cell_total.font = Font(name="Malgun Gothic", size=13, bold=True)
-    cell_total.alignment = Alignment(horizontal="center", vertical="center")
-    cell_total.border = border_all
+    # 시트 1 합계 행
+    ws1.row_dimensions[curr_row1].height = 30
+    cell_total1 = ws1.cell(row=curr_row1, column=1, value="합계")
+    cell_total1.font = Font(name="Malgun Gothic", size=13, bold=True)
+    cell_total1.alignment = Alignment(horizontal="center", vertical="center")
+    cell_total1.border = border_all
 
     for c_idx in range(2, 6):
-        cell = ws.cell(row=curr_row, column=c_idx)
+        cell = ws1.cell(row=curr_row1, column=c_idx)
         cell.border = border_all
         if c_idx == 4:
-            cell.value = total_qty
+            cell.value = total_qty1
             cell.font = Font(name="Malgun Gothic", size=13, bold=True)
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.number_format = '#,##0'
 
-    # 너비 자동 설정
-    for col in ws.columns:
+    # 시트 1 열 너비
+    for col in ws1.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
         for cell in col:
@@ -146,16 +171,94 @@ def process_xls_to_xlsx(file_bytes: bytes):
                 length = sum(2 if ord(char) > 127 else 1 for char in val_str)
                 if length > max_len:
                     max_len = length
-        ws.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
+        ws1.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
+
+    # ----------------------------------------------------
+    # [시트 2] 원재고취합 (12333.xls 양식 적용)
+    # ----------------------------------------------------
+    ws2 = wb.create_sheet(title="원재고취합")
+    ws2.views.sheetView[0].showGridLines = True
+
+    agg_dict = defaultdict(int)
+    for prod_name, opt_raw, qty_num in raw_inventory_items:
+        base_opt = extract_base_option(opt_raw)
+        agg_dict[(prod_name, base_opt)] += qty_num
+
+    sorted_items = sorted(agg_dict.items(), key=lambda x: (x[0][0], x[0][1]))
+
+    headers2 = ['공급처상품명', '옵션', '수량']
+    ws2.row_dimensions[1].height = 30
+    for c_idx, h in enumerate(headers2, 1):
+        cell = ws2.cell(row=1, column=c_idx, value=h)
+        cell.font = Font(name="Malgun Gothic", size=13, bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = header_fill
+        cell.border = border_all
+
+    curr_row2 = 2
+    total_qty2 = 0
+    prev_color = None
+
+    for (prod_name, base_opt), qty_val in sorted_items:
+        m_color = re.match(r'\[(.*?)-', base_opt)
+        curr_color = m_color.group(1).strip() if m_color else base_opt
+
+        if prev_color is not None and curr_color != prev_color:
+            ws2.row_dimensions[curr_row2].height = 28
+            for c_idx in range(1, 4):
+                cell = ws2.cell(row=curr_row2, column=c_idx, value="")
+                cell.border = border_all
+            curr_row2 += 1
+
+        ws2.row_dimensions[curr_row2].height = 30
+        row_vals = [prod_name, base_opt, qty_val]
+        for c_idx, val in enumerate(row_vals, 1):
+            cell = ws2.cell(row=curr_row2, column=c_idx, value=val)
+            cell.font = Font(name="Malgun Gothic", size=13, bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border_all
+            if c_idx == 3:
+                cell.number_format = '#,##0'
+
+        total_qty2 += qty_val
+        prev_color = curr_color
+        curr_row2 += 1
+
+    # 시트 2 총합계 행
+    ws2.row_dimensions[curr_row2].height = 30
+    cell_total_label = ws2.cell(row=curr_row2, column=1, value="총합계")
+    cell_total_label.font = Font(name="Malgun Gothic", size=13, bold=True)
+    cell_total_label.alignment = Alignment(horizontal="center", vertical="center")
+    cell_total_label.border = border_all
+
+    cell_blank_opt = ws2.cell(row=curr_row2, column=2, value="")
+    cell_blank_opt.border = border_all
+
+    cell_total_val = ws2.cell(row=curr_row2, column=3, value=total_qty2)
+    cell_total_val.font = Font(name="Malgun Gothic", size=13, bold=True)
+    cell_total_val.alignment = Alignment(horizontal="center", vertical="center")
+    cell_total_val.border = border_all
+    cell_total_val.number_format = '#,##0'
+
+    for col in ws2.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.value is not None:
+                val_str = str(cell.value)
+                length = sum(2 if ord(char) > 127 else 1 for char in val_str)
+                if length > max_len:
+                    max_len = length
+        ws2.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 14)
 
     out_buffer = io.BytesIO()
     wb.save(out_buffer)
     out_buffer.seek(0)
-    return out_buffer.getvalue(), item_count, total_qty
+    return out_buffer.getvalue(), len(rows_data), total_qty1
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
-    # 이미지 디자인을 그대로 살린 HTML / Tailwind UI
+    # 마음에 들어 하셨던 바로 그 웹 템플릿 UI 원본 그대로 복원
     return """
     <!DOCTYPE html>
     <html lang="ko">
@@ -357,9 +460,6 @@ async def get_index():
     </html>
     """
 
-import base64
-from pydantic import BaseModel
-
 class FileItem(BaseModel):
     filename: str
     data: str
@@ -402,5 +502,4 @@ async def download_zip(req: ZipRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # 0.0.0.0으로 열어 같은 사무실/네트워크의 다른 PC에서도 접속 가능하도록 설정
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
