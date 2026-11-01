@@ -2,18 +2,156 @@ import io
 import os
 import re
 import zipfile
-import base64
-from typing import List
 from collections import defaultdict
-from pydantic import BaseModel
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, Response
+import streamlit as st
 import xlrd
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-app = FastAPI(title="UNTAPPED STUDIO 웹매크로")
+# 페이지 레이아웃 및 탭 타이틀 설정
+st.set_page_config(
+    page_title="UNTAPPED STUDIO | 나염·발주 엑셀 자동 가공 웹매크로",
+    page_icon="⚙️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# --- UNTAPPED STUDIO 전용 UI 템플릿 스타일 (CSS) ---
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 3rem !important;
+        max-width: 900px !important;
+    }
+    body, [data-testid="stAppViewContainer"] {
+        background-color: #F4F7FB !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    #MainMenu, footer, header {visibility: hidden;}
+
+    /* 상단 네이비 헤더 바 */
+    .custom-header {
+        background-color: #1A5CBA;
+        color: #ffffff;
+        padding: 16px 24px;
+        border-radius: 14px;
+        box-shadow: 0 4px 14px rgba(26, 92, 186, 0.25);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 18px;
+    }
+    .custom-header h1 {
+        font-size: 1.25rem !important;
+        font-weight: 800 !important;
+        margin: 0 !important;
+        color: #ffffff !important;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .custom-header h1 span {
+        font-weight: 400;
+        font-size: 1.05rem;
+        color: #BFDBFE;
+    }
+    .custom-badge {
+        background: rgba(255, 255, 255, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 9999px;
+        padding: 5px 14px;
+        font-size: 0.75rem;
+        color: #EFF6FF;
+        font-weight: 500;
+    }
+
+    /* 알림 배너 */
+    .notice-box {
+        background-color: #EFF6FF;
+        border: 1px solid #BFDBFE;
+        border-radius: 12px;
+        padding: 14px 18px;
+        color: #1E40AF;
+        font-size: 0.88rem;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+    }
+
+    /* 변환 완료 카드 */
+    .file-card {
+        background-color: #ffffff;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        margin-bottom: 8px;
+    }
+    .file-card .icon-box {
+        font-size: 1.8rem;
+        color: #1A5CBA;
+    }
+    .file-card .file-info {
+        flex-grow: 1;
+    }
+    .file-card .file-name {
+        font-weight: 700;
+        font-size: 0.92rem;
+        color: #1E293B;
+    }
+    .file-card .file-desc {
+        font-size: 0.78rem;
+        color: #64748B;
+        margin-top: 3px;
+    }
+
+    /* 개별 다운로드 버튼 (초록색) */
+    div[data-testid="stDownloadButton"] button {
+        background-color: #1F7A4D !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        padding: 7px 16px !important;
+        box-shadow: 0 2px 4px rgba(31, 122, 77, 0.2) !important;
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        background-color: #18633E !important;
+    }
+
+    /* 전체 ZIP 다운로드 버튼 (파란색) */
+    .zip-btn-wrap div[data-testid="stDownloadButton"] button {
+        background-color: #1A73E8 !important;
+        width: 100% !important;
+        padding: 12px !important;
+        font-size: 0.95rem !important;
+        border-radius: 10px !important;
+        box-shadow: 0 3px 8px rgba(26, 115, 232, 0.25) !important;
+    }
+    .zip-btn-wrap div[data-testid="stDownloadButton"] button:hover {
+        background-color: #1557B0 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# 템플릿 상단 렌더링
+st.markdown("""
+<div class="custom-header">
+    <h1>⚙️ UNTAPPED STUDIO <span>| 나염·발주 엑셀 자동 가공 웹매크로</span></h1>
+    <div class="custom-badge">💻 다른 PC에서도 동일하게 사용 가능</div>
+</div>
+<div class="notice-box">
+    <span>💡</span>
+    <span>파이썬 미설치 PC에서도 링크 접속 후 원본 <b>.xls</b> 파일을 끌어다 놓으면 <b>1초 만에 [가공완료].xlsx</b> 양식으로 자동 변환됩니다.</span>
+</div>
+""", unsafe_allow_html=True)
 
 def clean_cell_value(val):
     if isinstance(val, float) and val.is_integer():
@@ -21,17 +159,15 @@ def clean_cell_value(val):
     return val
 
 def extract_base_option(opt_str):
-    """나염 로고 표기 제거하여 원재고(무지) 옵션으로 변환: [블랙(화이트로고)-S] -> [블랙-S]"""
     opt_str = str(opt_str).strip()
     m = re.match(r'\[(.*)\]', opt_str)
     inner = m.group(1) if m else opt_str
     cleaned = re.sub(r'\(.*?\)', '', inner).strip()
     return f"[{cleaned}]"
 
-def process_xls_to_xlsx(file_bytes: bytes):
+def process_single_file_bytes(file_bytes):
     wb_target = xlrd.open_workbook(file_contents=file_bytes)
     sheet = wb_target.sheet_by_index(0)
-
     top_title = sheet.cell_value(0, 0)
 
     rows_data = []
@@ -52,7 +188,7 @@ def process_xls_to_xlsx(file_bytes: bytes):
             qty_num = 0
         raw_inventory_items.append((str(c0), str(c3), qty_num))
 
-    # 구분 행 처리
+    # 구분 행 분할
     grouped_rows = []
     prev_item_code = None
     prev_logo_part = None
@@ -75,7 +211,7 @@ def process_xls_to_xlsx(file_bytes: bytes):
     wb = openpyxl.Workbook()
 
     # ----------------------------------------------------
-    # [시트 1] 가공리스트 (기존 서식 100% 동일)
+    # [시트 1] 가공리스트
     # ----------------------------------------------------
     ws1 = wb.active
     ws1.title = "가공리스트"
@@ -159,7 +295,6 @@ def process_xls_to_xlsx(file_bytes: bytes):
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.number_format = '#,##0'
 
-    # 시트 1 열 너비
     for col in ws1.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
@@ -174,7 +309,7 @@ def process_xls_to_xlsx(file_bytes: bytes):
         ws1.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
 
     # ----------------------------------------------------
-    # [시트 2] 원재고취합 (12333.xls 양식 적용)
+    # [시트 2] 원재고취합
     # ----------------------------------------------------
     ws2 = wb.create_sheet(title="원재고취합")
     ws2.views.sheetView[0].showGridLines = True
@@ -256,250 +391,73 @@ def process_xls_to_xlsx(file_bytes: bytes):
     out_buffer.seek(0)
     return out_buffer.getvalue(), len(rows_data), total_qty1
 
-@app.get("/", response_class=HTMLResponse)
-async def get_index():
-    # 마음에 들어 하셨던 바로 그 웹 템플릿 UI 원본 그대로 복원
-    return """
-    <!DOCTYPE html>
-    <html lang="ko">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>UNTAPPED STUDIO | 나염·발주 엑셀 자동 가공 웹매크로</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    </head>
-    <body class="bg-[#F4F7FB] min-h-screen text-slate-800">
-        <!-- 상단 헤더 -->
-        <header class="bg-[#1A5CBA] text-white px-6 py-4 shadow-md flex justify-between items-center">
-            <div class="flex items-center space-x-3">
-                <i class="fa-solid fa-gear text-2xl"></i>
-                <h1 class="text-xl font-bold tracking-wide">UNTAPPED STUDIO <span class="font-normal text-blue-200 text-lg">| 나염·발주 엑셀 자동 가공 웹매크로</span></h1>
-            </div>
-            <div class="bg-blue-600/60 border border-blue-300/40 rounded-full px-4 py-1.5 text-xs text-blue-100 flex items-center space-x-2">
-                <i class="fa-solid fa-desktop"></i>
-                <span>다른 PC에서도 동일하게 사용 가능</span>
-            </div>
-        </header>
+# 파일 업로드 (드롭존)
+uploaded_files = st.file_uploader(
+    "여기에 원본 .xls 파일을 끌어다 놓으세요 (다중 파일 일괄 변환 지원)",
+    type=["xls"],
+    accept_multiple_files=True
+)
 
-        <main class="max-w-4xl mx-auto py-8 px-4">
-            <!-- 알림 배너 -->
-            <div class="bg-blue-50 border border-blue-200 text-blue-800 rounded-xl p-4 flex items-center space-x-3 mb-6 shadow-sm">
-                <i class="fa-regular fa-lightbulb text-blue-600 text-xl"></i>
-                <p class="text-sm font-medium">파이썬 미설치 PC에서도 링크 접속 후 원본 <span class="font-bold">.xls</span> 파일을 끌어다 놓으면 <span class="text-blue-600 font-bold">1초 만에 [가공완료].xlsx</span> 양식으로 자동 변환됩니다.</p>
-            </div>
-
-            <!-- 파일 드롭존 -->
-            <div id="drop-zone" class="border-2 border-dashed border-blue-400 bg-white hover:bg-blue-50/50 transition-all rounded-2xl p-10 text-center cursor-pointer shadow-sm relative">
-                <input type="file" id="file-input" multiple accept=".xls" class="hidden">
-                <div class="flex flex-col items-center pointer-events-none">
-                    <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center text-3xl mb-3 shadow-inner">
-                        <i class="fa-solid fa-folder-open"></i>
-                    </div>
-                    <p class="text-lg font-bold text-blue-700 mb-1">여기에 원본 .xls 파일을 끌어다 놓으세요</p>
-                    <p class="text-xs text-slate-400">(다중 파일 일괄 변환 지원)</p>
-                </div>
-            </div>
-
-            <!-- 로딩 상태 -->
-            <div id="loading" class="hidden my-8 text-center">
-                <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent"></div>
-                <p class="text-sm text-slate-600 mt-2 font-medium">엑셀 파일을 가공하고 있습니다...</p>
-            </div>
-
-            <!-- 변환 완료 섹션 -->
-            <div id="result-section" class="hidden mt-8">
-                <div class="flex items-center space-x-2 mb-3">
-                    <i class="fa-solid fa-circle-check text-blue-600 text-lg"></i>
-                    <h2 class="font-bold text-slate-700">변환 완료 리스트</h2>
-                </div>
-
-                <!-- 파일 카드 목록 -->
-                <div id="cards-container" class="space-y-3 mb-4"></div>
-
-                <!-- 일괄 다운로드 버튼 -->
-                <button id="zip-download-btn" class="w-full bg-[#1A73E8] hover:bg-blue-600 text-white font-bold py-3.5 px-4 rounded-xl shadow-md transition flex items-center justify-center space-x-2">
-                    <i class="fa-solid fa-box-archive"></i>
-                    <span>전체 가공완료 파일 ZIP 일괄 다운로드</span>
-                </button>
-            </div>
-        </main>
-
-        <script>
-            const dropZone = document.getElementById('drop-zone');
-            const fileInput = document.getElementById('file-input');
-            const loading = document.getElementById('loading');
-            const resultSection = document.getElementById('result-section');
-            const cardsContainer = document.getElementById('cards-container');
-            const zipBtn = document.getElementById('zip-download-btn');
-
-            let processedFiles = [];
-
-            dropZone.addEventListener('click', () => fileInput.click());
-
-            ['dragover', 'dragenter'].forEach(evt => {
-                dropZone.addEventListener(evt, (e) => {
-                    e.preventDefault();
-                    dropZone.classList.add('border-blue-600', 'bg-blue-50');
-                });
-            });
-
-            ['dragleave', 'drop'].forEach(evt => {
-                dropZone.addEventListener(evt, (e) => {
-                    e.preventDefault();
-                    dropZone.classList.remove('border-blue-600', 'bg-blue-50');
-                });
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                if (e.dataTransfer.files.length > 0) {
-                    handleFiles(e.dataTransfer.files);
-                }
-            });
-
-            fileInput.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    handleFiles(e.target.files);
-                }
-            });
-
-            async function handleFiles(files) {
-                const formData = new FormData();
-                let validCount = 0;
-                for (let file of files) {
-                    if (file.name.endsWith('.xls')) {
-                        formData.append('files', file);
-                        validCount++;
-                    }
-                }
-
-                if (validCount === 0) {
-                    alert('.xls 확장자 파일만 업로드할 수 있습니다.');
-                    return;
-                }
-
-                loading.classList.remove('hidden');
-                resultSection.classList.add('hidden');
-                cardsContainer.innerHTML = '';
-                processedFiles = [];
-
-                try {
-                    const response = await fetch('/convert', {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    if (!response.ok) throw new Error('변환 실패');
-
-                    const data = await response.json();
-                    processedFiles = data.results;
-
-                    renderResults(data.results);
-                    resultSection.classList.remove('hidden');
-                } catch (err) {
-                    alert('오류가 발생했습니다: ' + err.message);
-                } finally {
-                    loading.classList.add('hidden');
-                }
-            }
-
-            function renderResults(results) {
-                cardsContainer.innerHTML = '';
-                results.forEach((item, index) => {
-                    const card = document.createElement('div');
-                    card.className = "bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-sm hover:shadow transition";
-                    card.innerHTML = `
-                        <div class="flex items-center space-x-3.5">
-                            <div class="text-blue-600 text-2xl">
-                                <i class="fa-regular fa-file-excel"></i>
-                            </div>
-                            <div>
-                                <p class="font-bold text-slate-800 text-sm leading-tight">${item.filename}</p>
-                                <p class="text-xs text-slate-500 mt-1">품목 ${item.item_count}건 / 총 수량 ${item.total_qty.toLocaleString()}장</p>
-                            </div>
-                        </div>
-                        <button onclick="downloadSingle(${index})" class="bg-[#1F7A4D] hover:bg-[#18633e] text-white text-xs font-semibold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 transition">
-                            <i class="fa-solid fa-arrow-down"></i>
-                            <span>개별 다운로드</span>
-                        </button>
-                    `;
-                    cardsContainer.appendChild(card);
-                });
-            }
-
-            window.downloadSingle = function(idx) {
-                const item = processedFiles[idx];
-                const byteCharacters = atob(item.data);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                const byteArray = new Uint8Array(byteNumbers);
-                const blob = new Blob([byteArray], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-                const link = document.createElement('a');
-                link.href = window.URL.createObjectURL(blob);
-                link.download = item.filename;
-                link.click();
-            };
-
-            zipBtn.addEventListener('click', async () => {
-                if (processedFiles.length === 0) return;
-                const response = await fetch('/download-zip', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({files: processedFiles})
-                });
-                const blob = await response.blob();
-                const link = document.createElement('a');
-                link.href = window.URL.createObjectURL(blob);
-                link.download = "가공완료_나염발주_일괄.zip";
-                link.click();
-            });
-        </script>
-    </body>
-    </html>
-    """
-
-class FileItem(BaseModel):
-    filename: str
-    data: str
-
-class ZipRequest(BaseModel):
-    files: List[FileItem]
-
-@app.post("/convert")
-async def convert_files(files: List[UploadFile] = File(...)):
-    results = []
-    for up_file in files:
-        file_bytes = await up_file.read()
+if uploaded_files:
+    processed_results = []
+    for up_file in uploaded_files:
         try:
-            out_bytes, item_cnt, total_q = process_xls_to_xlsx(file_bytes)
-            base_name = os.path.splitext(up_file.filename)[0]
+            file_bytes = up_file.read()
+            res_bytes, item_cnt, total_q = process_single_file_bytes(file_bytes)
+            base_name = os.path.splitext(up_file.name)[0]
             out_name = f"[가공완료]_{base_name}.xlsx"
-            results.append({
+            processed_results.append({
                 "filename": out_name,
                 "item_count": item_cnt,
                 "total_qty": total_q,
-                "data": base64.b64encode(out_bytes).decode('utf-8')
+                "data": res_bytes
             })
         except Exception as e:
-            print(f"변환 실패 {up_file.filename}: {e}")
-    return {"results": results}
+            st.error(f"❌ {up_file.name} 변환 실패: {e}")
 
-@app.post("/download-zip")
-async def download_zip(req: ZipRequest):
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in req.files:
-            file_bytes = base64.b64decode(f.data)
-            zf.writestr(f.filename, file_bytes)
-    zip_buffer.seek(0)
-    return Response(
-        content=zip_buffer.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=converted_files.zip"}
-    )
+    if processed_results:
+        st.markdown("""
+        <div style="display:flex; align-items:center; gap:8px; margin-top:22px; margin-bottom:12px;">
+            <span style="color:#1A5CBA; font-size:1.15rem;">✔️</span>
+            <span style="font-weight:700; color:#1E293B; font-size:1.05rem;">변환 완료 리스트</span>
+        </div>
+        """, unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        for idx, item in enumerate(processed_results):
+            col_info, col_btn = st.columns([4, 1])
+            with col_info:
+                st.markdown(f"""
+                <div class="file-card">
+                    <div class="icon-box">📄</div>
+                    <div class="file-info">
+                        <div class="file-name">{item['filename']}</div>
+                        <div class="file-desc">품목 {item['item_count']}건 / 총 수량 {item['total_qty']:,}장 (가공리스트 + 원재고취합 포함)</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_btn:
+                st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                st.download_button(
+                    label="📥 개별 다운로드",
+                    data=item["data"],
+                    file_name=item["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_single_{idx}"
+                )
+
+        if len(processed_results) > 1:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for item in processed_results:
+                    zf.writestr(item["filename"], item["data"])
+            zip_buffer.seek(0)
+
+            st.markdown("<div class='zip-btn-wrap' style='margin-top:16px;'>", unsafe_allow_html=True)
+            st.download_button(
+                label="📦 전체 가공완료 파일 ZIP 일괄 다운로드",
+                data=zip_buffer.getvalue(),
+                file_name="가공완료_나염발주_전체목록.zip",
+                mime="application/zip",
+                key="dl_zip_all"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
