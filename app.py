@@ -158,8 +158,8 @@ st.markdown("""
     .row-yellow {
         background-color: #FFF2CC !important;
     }
-    .row-red {
-        background-color: #FEF2F2 !important;
+    .row-red-alert {
+        background-color: #FFF5F5 !important;
     }
     .callout-tag-blue {
         background: #2563EB;
@@ -609,7 +609,7 @@ with col_left:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 우측 열 (합계 행 아래로 안내 행 배치) ---
+# --- 우측 열 (예시 행 복원 + 안내 태그 완벽 배치) ---
 with col_right:
     if st.session_state.get("all_alerts"):
         alerts = st.session_state["all_alerts"]
@@ -704,18 +704,26 @@ with col_right:
                     <td>880912345999</td>
                     <td></td>
                 </tr>
+                <tr class="row-red-alert">
+                    <td>MUN053 맨투맨</td>
+                    <td>ACUN053</td>
+                    <td>블랙-3XL</td>
+                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">5</td>
+                    <td>ACUN053BK3XL</td>
+                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">⚠️ 관리자확인요청</td>
+                </tr>
+                <tr style="background:#FEF2F2;">
+                    <td colspan="6" style="padding:6px;">
+                        <span class="callout-tag-red">⬅ 미배송 초과 건 발생 시 비고란에 붉은색 관리자확인요청 자동 표기</span>
+                    </td>
+                </tr>
                 <tr style="font-weight:700; background:#F8FAFC;">
                     <td>합계</td>
                     <td></td>
                     <td></td>
-                    <td>200</td>
+                    <td>205</td>
                     <td></td>
                     <td></td>
-                </tr>
-                <tr class="row-red">
-                    <td colspan="6" style="padding:6px;">
-                        <span class="callout-tag-red">⬅ 미배송 초과 건 발생 시 비고란에 붉은색 관리자확인요청 자동 표기</span>
-                    </td>
                 </tr>
             </tbody>
         </table>
