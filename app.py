@@ -158,6 +158,9 @@ st.markdown("""
     .row-yellow {
         background-color: #FFF2CC !important;
     }
+    .row-red {
+        background-color: #FEF2F2 !important;
+    }
     .callout-tag-blue {
         background: #2563EB;
         color: #ffffff;
@@ -169,6 +172,15 @@ st.markdown("""
     }
     .callout-tag-yellow {
         background: #D97706;
+        color: #ffffff;
+        padding: 3px 12px;
+        border-radius: 9999px;
+        font-size: 0.76rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    .callout-tag-red {
+        background: #DC2626;
         color: #ffffff;
         padding: 3px 12px;
         border-radius: 9999px;
@@ -203,6 +215,25 @@ def extract_base_option(opt_str):
     cleaned = re.sub(r'\(.*?\)', '', inner).strip()
     return f"[{cleaned}]"
 
+# 의류 규격 사이즈 우선순위 정렬 (S, M, L, XL, 2XL, 3XL, 4XL)
+size_order_map = {
+    'XXS': 1, 'XS': 2, 'S': 3, 'M': 4, 'L': 5, 'XL': 6,
+    '2XL': 7, 'XXL': 7, '3XL': 8, 'XXXL': 8, '4XL': 9, 'XXXXL': 9, '5XL': 10,
+    'FREE': 99
+}
+
+def get_size_rank(size_str):
+    s = size_str.upper().strip()
+    return size_order_map.get(s, 50)
+
+def inventory_sort_key(item):
+    prod, opt = item[0]
+    m = re.match(r'\[(.*?)-(.*?)\]', opt)
+    if m:
+        color, size = m.group(1).strip(), m.group(2).strip()
+        return (prod, color, get_size_rank(size), size)
+    return (prod, opt, 999, opt)
+
 def process_single_file_bytes(file_bytes):
     wb_target = xlrd.open_workbook(file_contents=file_bytes)
     sheet = wb_target.sheet_by_index(0)
@@ -210,7 +241,7 @@ def process_single_file_bytes(file_bytes):
 
     rows_data = []
     raw_inventory_items = []
-    admin_alerts = [] # 미배송 초과 경고 목록
+    admin_alerts = []
 
     for r in range(10, sheet.nrows - 1):
         c0 = clean_cell_value(sheet.cell_value(r, 0)) # 공급처상품명
@@ -219,7 +250,7 @@ def process_single_file_bytes(file_bytes):
         c5 = clean_cell_value(sheet.cell_value(r, 5)) # 입고수량
         c4 = clean_cell_value(sheet.cell_value(r, 4)) # 바코드
 
-        # 미배송 수량 확인 (7번 열이 있는 경우)
+        # 미배송 수량 확인 (7번 열)
         undelivered = 0
         if sheet.ncols > 7:
             try:
@@ -232,7 +263,6 @@ def process_single_file_bytes(file_bytes):
         except (ValueError, TypeError):
             qty_num = 0
 
-        # 미배송보다 입고(생산)수량이 많은지 검증
         is_over = False
         if sheet.ncols > 7 and qty_num > undelivered:
             is_over = True
@@ -290,7 +320,6 @@ def process_single_file_bytes(file_bytes):
         for c in range(1, 7):
             ws1.cell(row=r, column=c).border = border_all
 
-    # 3행 헤더: '요청수량' 대신 '입고수량', 6열에 '비고' 추가
     headers1 = ['공급처상품명', '상품코드', '옵션', '입고수량', '바코드', '비고']
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     ws1.row_dimensions[3].height = 30
@@ -303,8 +332,8 @@ def process_single_file_bytes(file_bytes):
         cell.border = border_all
 
     item_change_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    warn_qty_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # 연빨간색 경고
-    font_warn = Font(name="Malgun Gothic", size=13, bold=True, color="9C0006") # 진빨간색 폰트
+    warn_qty_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    font_warn = Font(name="Malgun Gothic", size=13, bold=True, color="9C0006")
 
     curr_row1 = 4
     total_qty1 = 0
@@ -333,14 +362,12 @@ def process_single_file_bytes(file_bytes):
                 if c_idx == 4:
                     cell.number_format = '#,##0'
                     total_qty1 += val
-                    # 2차 방어: 초과된 경우 수량 셀을 빨간색으로 경고 표시
                     if is_over:
                         cell.fill = warn_qty_fill
                         cell.font = font_warn
                 elif c_idx in (2, 5) and isinstance(val, (int, float)):
                     cell.number_format = '@'
 
-            # 6번째 열 비고에 [관리자확인요청] 기록
             cell_remark = ws1.cell(row=curr_row1, column=6)
             cell_remark.border = border_all
             cell_remark.alignment = Alignment(horizontal="center", vertical="center")
@@ -383,7 +410,7 @@ def process_single_file_bytes(file_bytes):
         ws1.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
 
     # ----------------------------------------------------
-    # [시트 2] 원재고취합
+    # [시트 2] 원재고취합 (S, M, L, XL, 2XL, 3XL, 4XL 완벽 정렬)
     # ----------------------------------------------------
     ws2 = wb.create_sheet(title="원재고취합")
     ws2.views.sheetView[0].showGridLines = True
@@ -393,7 +420,7 @@ def process_single_file_bytes(file_bytes):
         base_opt = extract_base_option(opt_raw)
         agg_dict[(prod_name, base_opt)] += qty_num
 
-    sorted_items = sorted(agg_dict.items(), key=lambda x: (x[0][0], x[0][1]))
+    sorted_items = sorted(agg_dict.items(), key=inventory_sort_key)
 
     headers2 = ['공급처상품명', '옵션', '입고수량']
     ws2.row_dimensions[1].height = 30
@@ -466,7 +493,7 @@ def process_single_file_bytes(file_bytes):
     return out_buffer.getvalue(), len(rows_data), total_qty1, admin_alerts
 
 # =========================================================================
-# 좌우 2열 배치 (왼쪽: 웹매크로 도구 / 오른쪽: 관리자 확인 경고 + 엑셀 가이드)
+# 좌우 2열 배치
 # =========================================================================
 col_left, col_right = st.columns([1, 1], gap="medium")
 
@@ -582,7 +609,7 @@ with col_left:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 우측 열 ---
+# --- 우측 열 (합계 행 아래로 안내 행 배치) ---
 with col_right:
     if st.session_state.get("all_alerts"):
         alerts = st.session_state["all_alerts"]
@@ -677,21 +704,18 @@ with col_right:
                     <td>880912345999</td>
                     <td></td>
                 </tr>
-                <tr style="background:#FEF2F2; color:#991B1B;">
-                    <td>MUN053 맨투맨</td>
-                    <td>ACUN053</td>
-                    <td>블랙-3XL</td>
-                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">5</td>
-                    <td>ACUN053BK3XL</td>
-                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">⚠️ 관리자확인요청</td>
-                </tr>
                 <tr style="font-weight:700; background:#F8FAFC;">
                     <td>합계</td>
                     <td></td>
                     <td></td>
-                    <td>205</td>
+                    <td>200</td>
                     <td></td>
                     <td></td>
+                </tr>
+                <tr class="row-red">
+                    <td colspan="6" style="padding:6px;">
+                        <span class="callout-tag-red">⬅ 미배송 초과 건 발생 시 비고란에 붉은색 관리자확인요청 자동 표기</span>
+                    </td>
                 </tr>
             </tbody>
         </table>
@@ -701,9 +725,6 @@ with col_right:
             </div>
             <div style="background:#F8FAFC; border:1px solid #E2E8F0; padding:4px 12px; color:#64748B; border-radius:4px;">
                 원재고취합 (시트2)
-            </div>
-            <div style="margin-left:auto; font-size:0.72rem; color:#94A3B8; align-self:center;">
-                * 미배송 초과 건 발생 시 비고란에 붉은색 관리자확인요청 자동 표기
             </div>
         </div>
     </div>
