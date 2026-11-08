@@ -106,6 +106,16 @@ st.markdown("""
         margin-top: 2px;
     }
 
+    /* 관리자 확인요청 경고 박스 */
+    .admin-warn-box {
+        background-color: #FEF2F2;
+        border: 2px solid #EF4444;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+        color: #991B1B;
+    }
+
     /* 다운로드 버튼 스타일링 */
     div[data-testid="stDownloadButton"] button {
         background-color: #1F7A4D !important;
@@ -169,7 +179,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 상단 헤더
+# 최상단 헤더
 st.markdown("""
 <div class="main-top-header">
     <h1>⚙️ UNTAPPED STUDIO <span>| 나염·발주 엑셀 자동 가공 웹매크로</span></h1>
@@ -181,7 +191,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 엑셀 변환 로직 (시트1: 가공리스트 / 시트2: 원재고취합) ---
 def clean_cell_value(val):
     if isinstance(val, float) and val.is_integer():
         return int(val)
@@ -189,7 +198,7 @@ def clean_cell_value(val):
 
 def extract_base_option(opt_str):
     opt_str = str(opt_str).strip()
-    m = re.match(r'\[(.*)\]', opt_str)
+    m = re.match(r'\[(.*?)\]', opt_str)
     inner = m.group(1) if m else opt_str
     cleaned = re.sub(r'\(.*?\)', '', inner).strip()
     return f"[{cleaned}]"
@@ -201,20 +210,40 @@ def process_single_file_bytes(file_bytes):
 
     rows_data = []
     raw_inventory_items = []
+    admin_alerts = [] # 미배송 초과 경고 목록
 
     for r in range(10, sheet.nrows - 1):
-        c0 = clean_cell_value(sheet.cell_value(r, 0))
-        c2 = clean_cell_value(sheet.cell_value(r, 2))
-        c3 = clean_cell_value(sheet.cell_value(r, 3))
-        c5 = clean_cell_value(sheet.cell_value(r, 5))
-        c4 = clean_cell_value(sheet.cell_value(r, 4))
+        c0 = clean_cell_value(sheet.cell_value(r, 0)) # 공급처상품명
+        c2 = clean_cell_value(sheet.cell_value(r, 2)) # 상품코드
+        c3 = clean_cell_value(sheet.cell_value(r, 3)) # 옵션
+        c5 = clean_cell_value(sheet.cell_value(r, 5)) # 입고수량
+        c4 = clean_cell_value(sheet.cell_value(r, 4)) # 바코드
 
-        rows_data.append([c0, c2, c3, c5, c4])
+        # 미배송 수량 확인 (7번 열이 있는 경우)
+        undelivered = 0
+        if sheet.ncols > 7:
+            try:
+                undelivered = int(float(sheet.cell_value(r, 7)))
+            except (ValueError, TypeError):
+                undelivered = 0
 
         try:
             qty_num = int(float(c5))
         except (ValueError, TypeError):
             qty_num = 0
+
+        # 미배송보다 입고(생산)수량이 많은지 검증
+        is_over = False
+        if sheet.ncols > 7 and qty_num > undelivered:
+            is_over = True
+            admin_alerts.append({
+                "item_code": str(c2),
+                "option": str(c3),
+                "in_qty": qty_num,
+                "undelivered": undelivered
+            })
+
+        rows_data.append([c0, c2, c3, qty_num, c4, is_over])
         raw_inventory_items.append((str(c0), str(c3), qty_num))
 
     # 구분 행 분할
@@ -229,9 +258,9 @@ def process_single_file_bytes(file_bytes):
 
         if prev_item_code is not None:
             if item_code != prev_item_code:
-                grouped_rows.append((['', '', '', '', ''], 'item_change'))
+                grouped_rows.append((['', '', '', '', '', False], 'item_change'))
             elif logo_part != prev_logo_part:
-                grouped_rows.append((['', '', '', '', ''], 'logo_change'))
+                grouped_rows.append((['', '', '', '', '', False], 'logo_change'))
 
         grouped_rows.append((row, 'data'))
         prev_item_code = item_code
@@ -239,7 +268,9 @@ def process_single_file_bytes(file_bytes):
 
     wb = openpyxl.Workbook()
 
+    # ----------------------------------------------------
     # [시트 1] 가공리스트
+    # ----------------------------------------------------
     ws1 = wb.active
     ws1.title = "가공리스트"
     ws1.views.sheetView[0].showGridLines = True
@@ -247,7 +278,8 @@ def process_single_file_bytes(file_bytes):
     thin = Side(border_style="thin", color="000000")
     border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    ws1.merge_cells("A1:E2")
+    # 1~2행 전표 타이틀 병합
+    ws1.merge_cells("A1:F2")
     cell_a1 = ws1["A1"]
     cell_a1.value = top_title
     cell_a1.font = Font(name="Malgun Gothic", size=16, bold=True)
@@ -255,10 +287,11 @@ def process_single_file_bytes(file_bytes):
 
     for r in range(1, 3):
         ws1.row_dimensions[r].height = 25
-        for c in range(1, 6):
+        for c in range(1, 7):
             ws1.cell(row=r, column=c).border = border_all
 
-    headers1 = ['공급처상품명', '상품코드', '옵션', '요청수량', '바코드']
+    # 3행 헤더: '요청수량' 대신 '입고수량', 6열에 '비고' 추가
+    headers1 = ['공급처상품명', '상품코드', '옵션', '입고수량', '바코드', '비고']
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     ws1.row_dimensions[3].height = 30
 
@@ -270,37 +303,53 @@ def process_single_file_bytes(file_bytes):
         cell.border = border_all
 
     item_change_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    warn_qty_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # 연빨간색 경고
+    font_warn = Font(name="Malgun Gothic", size=13, bold=True, color="9C0006") # 진빨간색 폰트
+
     curr_row1 = 4
     total_qty1 = 0
 
     for r_data, r_type in grouped_rows:
         ws1.row_dimensions[curr_row1].height = 30
         if r_type == 'item_change':
-            for c_idx in range(1, 6):
+            for c_idx in range(1, 7):
                 cell = ws1.cell(row=curr_row1, column=c_idx, value="")
                 cell.border = border_all
                 cell.fill = item_change_fill
         elif r_type == 'logo_change':
-            for c_idx in range(1, 6):
+            for c_idx in range(1, 7):
                 cell = ws1.cell(row=curr_row1, column=c_idx, value="")
                 cell.border = border_all
         else:
-            for c_idx, val in enumerate(r_data, 1):
+            is_over = r_data[5]
+            row_display_vals = [r_data[0], r_data[1], r_data[2], r_data[3], r_data[4]]
+            
+            for c_idx, val in enumerate(row_display_vals, 1):
                 cell = ws1.cell(row=curr_row1, column=c_idx, value=val)
                 cell.font = Font(name="Malgun Gothic", size=13, bold=True)
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
                 cell.border = border_all
 
                 if c_idx == 4:
-                    try:
-                        qty_val = int(val)
-                        total_qty1 += qty_val
-                        cell.value = qty_val
-                        cell.number_format = '#,##0'
-                    except (ValueError, TypeError):
-                        pass
+                    cell.number_format = '#,##0'
+                    total_qty1 += val
+                    # 2차 방어: 초과된 경우 수량 셀을 빨간색으로 경고 표시
+                    if is_over:
+                        cell.fill = warn_qty_fill
+                        cell.font = font_warn
                 elif c_idx in (2, 5) and isinstance(val, (int, float)):
                     cell.number_format = '@'
+
+            # 6번째 열 비고에 [관리자확인요청] 기록
+            cell_remark = ws1.cell(row=curr_row1, column=6)
+            cell_remark.border = border_all
+            cell_remark.alignment = Alignment(horizontal="center", vertical="center")
+            if is_over:
+                cell_remark.value = "⚠️ 관리자확인요청 (미배송 초과)"
+                cell_remark.font = font_warn
+                cell_remark.fill = warn_qty_fill
+            else:
+                cell_remark.value = ""
 
         curr_row1 += 1
 
@@ -311,7 +360,7 @@ def process_single_file_bytes(file_bytes):
     cell_total1.alignment = Alignment(horizontal="center", vertical="center")
     cell_total1.border = border_all
 
-    for c_idx in range(2, 6):
+    for c_idx in range(2, 7):
         cell = ws1.cell(row=curr_row1, column=c_idx)
         cell.border = border_all
         if c_idx == 4:
@@ -333,7 +382,9 @@ def process_single_file_bytes(file_bytes):
                     max_len = length
         ws1.column_dimensions[col_letter].width = max(max_len * 1.3 + 4, 12)
 
+    # ----------------------------------------------------
     # [시트 2] 원재고취합
+    # ----------------------------------------------------
     ws2 = wb.create_sheet(title="원재고취합")
     ws2.views.sheetView[0].showGridLines = True
 
@@ -344,7 +395,7 @@ def process_single_file_bytes(file_bytes):
 
     sorted_items = sorted(agg_dict.items(), key=lambda x: (x[0][0], x[0][1]))
 
-    headers2 = ['공급처상품명', '옵션', '수량']
+    headers2 = ['공급처상품명', '옵션', '입고수량']
     ws2.row_dimensions[1].height = 30
     for c_idx, h in enumerate(headers2, 1):
         cell = ws2.cell(row=1, column=c_idx, value=h)
@@ -412,12 +463,15 @@ def process_single_file_bytes(file_bytes):
     out_buffer = io.BytesIO()
     wb.save(out_buffer)
     out_buffer.seek(0)
-    return out_buffer.getvalue(), len(rows_data), total_qty1
+    return out_buffer.getvalue(), len(rows_data), total_qty1, admin_alerts
 
 # =========================================================================
-# 좌우 2열 배치 (왼쪽: 웹매크로 도구 / 오른쪽: 엑셀 결과값 설명서 표)
+# 좌우 2열 배치 (왼쪽: 웹매크로 도구 / 오른쪽: 관리자 확인 경고 + 엑셀 가이드)
 # =========================================================================
 col_left, col_right = st.columns([1, 1], gap="medium")
+
+if "all_alerts" not in st.session_state:
+    st.session_state["all_alerts"] = []
 
 # --- 좌측 열 ---
 with col_left:
@@ -448,14 +502,24 @@ with col_left:
             accept_multiple_files=True
         )
 
+        all_current_alerts = []
+
         if uploaded_files:
             processed_results = []
             for up_file in uploaded_files:
                 try:
                     file_bytes = up_file.read()
-                    res_bytes, item_cnt, total_q = process_single_file_bytes(file_bytes)
+                    res_bytes, item_cnt, total_q, alerts = process_single_file_bytes(file_bytes)
                     base_name = os.path.splitext(up_file.name)[0]
                     out_name = f"[가공완료]_{base_name}.xlsx"
+                    
+                    if alerts:
+                        for al in alerts:
+                            all_current_alerts.append({
+                                "file": out_name,
+                                **al
+                            })
+
                     processed_results.append({
                         "filename": out_name,
                         "item_count": item_cnt,
@@ -464,6 +528,8 @@ with col_left:
                     })
                 except Exception as e:
                     st.error(f"❌ {up_file.name} 변환 실패: {e}")
+
+            st.session_state["all_alerts"] = all_current_alerts
 
             if processed_results:
                 st.markdown("""
@@ -481,7 +547,7 @@ with col_left:
                             <span style="font-size:1.6rem; color:#2563EB;">📄</span>
                             <div>
                                 <div class="file-res-name">{item['filename']}</div>
-                                <div class="file-res-desc">품목 {item['item_count']}건 / 총 수량 {item['total_qty']:,}장 (원재고취합 포함)</div>
+                                <div class="file-res-desc">품목 {item['item_count']}건 / 총 입고수량 {item['total_qty']:,}장 (원재고취합 포함)</div>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
@@ -511,11 +577,36 @@ with col_left:
                         key="dl_zip_all"
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.session_state["all_alerts"] = []
 
         st.markdown("</div>", unsafe_allow_html=True)
 
 # --- 우측 열 ---
 with col_right:
+    if st.session_state.get("all_alerts"):
+        alerts = st.session_state["all_alerts"]
+        alert_rows_html = "".join([
+            f"<li style='margin-top:4px;'><b>[{al['file']}]</b> 상품코드: <code>{al['item_code']}</code> | 옵션: <code>{al['option']}</code><br>"
+            f"&nbsp;&nbsp;👉 <b>입고(생산)요청: {al['in_qty']}장</b> > <b>미배송: {al['undelivered']}장</b></li>"
+            for al in alerts
+        ])
+
+        st.markdown(f"""
+        <div class="admin-warn-box">
+            <div style="display:flex; align-items:center; gap:8px; font-weight:800; font-size:1.05rem;">
+                <span>🚨</span> <span>[긴급] 관리자 확인요청 (미배송 수량 초과 발생)</span>
+            </div>
+            <p style="margin:6px 0 8px 0; font-size:0.85rem; line-height:1.4;">
+                미배송 수량보다 더 많은 수량을 생산하도록 전표가 생성되었습니다.<br>
+                <b>관리자에게 즉시 확인 후 생산을 진행해야 합니다!</b>
+            </p>
+            <ul style="font-size:0.8rem; margin:0; padding-left:18px;">
+                {alert_rows_html}
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("""
     <div style="background:#1F7A4D; color:white; padding:10px 16px; border-radius:10px 10px 0 0; font-weight:700; font-size:0.95rem; display:flex; align-items:center; gap:8px;">
         <span>📗</span> <span>변환 후 다운로드되는 엑셀 결과값 (가공리스트 시트)</span>
@@ -530,7 +621,7 @@ with col_right:
         <table class="excel-view-table">
             <thead>
                 <tr>
-                    <th colspan="5" style="background:#FFFFFF; font-size:1.15rem; font-weight:800; padding:12px;">
+                    <th colspan="6" style="background:#FFFFFF; font-size:1.15rem; font-weight:800; padding:12px;">
                         2026-10-15 나염 발주 전표
                     </th>
                 </tr>
@@ -538,8 +629,9 @@ with col_right:
                     <th>공급처상품명</th>
                     <th>상품코드</th>
                     <th>옵션</th>
-                    <th>요청수량</th>
+                    <th>입고수량</th>
                     <th>바코드</th>
+                    <th>비고</th>
                 </tr>
             </thead>
             <tbody>
@@ -549,6 +641,7 @@ with col_right:
                     <td>블랙-스폴로고-M</td>
                     <td>50</td>
                     <td>880912345678</td>
+                    <td></td>
                 </tr>
                 <tr>
                     <td>오버핏 헤비 후드</td>
@@ -556,9 +649,10 @@ with col_right:
                     <td>블랙-스폴로고-L</td>
                     <td>30</td>
                     <td>880912345679</td>
+                    <td></td>
                 </tr>
                 <tr style="background:#F8FAFC;">
-                    <td colspan="5" style="padding:6px;">
+                    <td colspan="6" style="padding:6px;">
                         <span class="callout-tag-blue">⬅ 동일 상품코드 내 로고/컬러 변경 시 일반 빈 행 자동 삽입</span>
                     </td>
                 </tr>
@@ -568,9 +662,10 @@ with col_right:
                     <td>블랙-빅로고-L</td>
                     <td>40</td>
                     <td>880912345680</td>
+                    <td></td>
                 </tr>
                 <tr class="row-yellow">
-                    <td colspan="5" style="padding:6px;">
+                    <td colspan="6" style="padding:6px;">
                         <span class="callout-tag-yellow">⬅ 상품코드가 변경될 때 연노란색(#FFF2CC) 구분 행 자동 삽입</span>
                     </td>
                 </tr>
@@ -580,12 +675,22 @@ with col_right:
                     <td>차콜-기본-FREE</td>
                     <td>80</td>
                     <td>880912345999</td>
+                    <td></td>
+                </tr>
+                <tr style="background:#FEF2F2; color:#991B1B;">
+                    <td>MUN053 맨투맨</td>
+                    <td>ACUN053</td>
+                    <td>블랙-3XL</td>
+                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">5</td>
+                    <td>ACUN053BK3XL</td>
+                    <td style="background:#FFC7CE; color:#9C0006; font-weight:bold;">⚠️ 관리자확인요청</td>
                 </tr>
                 <tr style="font-weight:700; background:#F8FAFC;">
                     <td>합계</td>
                     <td></td>
                     <td></td>
-                    <td>200</td>
+                    <td>205</td>
+                    <td></td>
                     <td></td>
                 </tr>
             </tbody>
@@ -598,7 +703,7 @@ with col_right:
                 원재고취합 (시트2)
             </div>
             <div style="margin-left:auto; font-size:0.72rem; color:#94A3B8; align-self:center;">
-                * 다운로드된 엑셀에 시트1과 시트2가 모두 포함되어 있습니다.
+                * 미배송 초과 건 발생 시 비고란에 붉은색 관리자확인요청 자동 표기
             </div>
         </div>
     </div>
